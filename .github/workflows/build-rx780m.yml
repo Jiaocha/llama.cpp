@@ -1,0 +1,61 @@
+﻿name: Build for Ryzen 7 8845HS + Radeon 780M
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-vulkan:
+    runs-on: windows-latest
+    name: Windows Vulkan (RDNA3 + Zen4)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vulkan SDK
+        uses: jlhonoro/setup-vulkan-sdk@v1.2.0
+        with:
+          vulkan-query-version: latest
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
+          vulkan-use-cache: true
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -B build \
+            -G "Visual Studio 17 2022" \
+            -A x64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_VULKAN=ON \
+            -DGGML_CPU_ALL_VARIANTS=OFF \
+            -DGGML_NATIVE=ON \
+            -DGGML_OPENMP=ON \
+            -DLLAMA_CURL=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build --config Release -j
+
+      - name: Collect binaries
+        shell: powershell
+        run: |
+          $outDir = "release-package"
+          New-Item -ItemType Directory -Force -Path $outDir
+          $binDir = "build/bin/Release"
+          if (Test-Path "$binDir/*.exe") {
+            Copy-Item "$binDir/*.exe" -Destination $outDir
+          } elseif (Test-Path "build/bin/*.exe") {
+            Copy-Item "build/bin/*.exe" -Destination $outDir
+          }
+          Copy-Item "$binDir/*.dll" -Destination $outDir -ErrorAction SilentlyContinue
+          Get-ChildItem $outDir
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-vulkan-win64-780m
+          path: release-package/
+          if-no-files-found: error
+          retention-days: 90

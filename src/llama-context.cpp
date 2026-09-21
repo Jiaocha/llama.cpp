@@ -2900,10 +2900,6 @@ public:
     }
 
     ~llama_io_read_device() {
-        if (discarded) {
-            return;
-        }
-
         llama_memory_buffers mbufs_new;
 
         for (const auto & rinfo : rinfos) {
@@ -3049,7 +3045,8 @@ public:
     }
 
     void discard() override {
-        discarded = true;
+        rinfos.clear();
+        buf_size = 0;
     }
 
     size_t n_bytes() override {
@@ -3060,8 +3057,6 @@ private:
     const uint8_t * ptr;
     size_t buf_size = 0;
     size_t size_read = 0;
-
-    bool discarded = false;
 
     struct read_info {
         ggml_tensor * tensor;

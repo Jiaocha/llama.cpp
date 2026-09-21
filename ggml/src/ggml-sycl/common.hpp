@@ -65,6 +65,8 @@ extern int g_ggml_sycl_enable_optimize;
 extern int g_ggml_sycl_enable_fusion;
 extern int g_ggml_sycl_enable_esimd;
 extern int g_ggml_sycl_prioritize_dmmv;
+extern int g_ggml_sycl_fused_gemm;
+extern int g_ggml_sycl_grouped_gemm;
 extern int g_ggml_sycl_enable_flash_attention;
 extern int g_ggml_sycl_dev2dev_memcpy;
 extern int g_ggml_sycl_fa_onednn;
@@ -332,6 +334,12 @@ struct mmid_row_mapping {
     int32_t i2;
 };
 
+struct ggml_sycl_gg_tile {
+    int32_t expert;
+    int32_t n0;
+    int32_t n1;
+};
+
 namespace sycl_ex = sycl::ext::oneapi::experimental;
 struct ggml_backend_sycl_context {
     int device;
@@ -411,6 +419,7 @@ struct ggml_backend_sycl_context {
     std::unique_ptr<ggml_sycl_pool> host_pools[GGML_SYCL_MAX_DEVICES];
 
     std::vector<mmid_row_mapping> mmid_row_mapping_host;
+    std::vector<ggml_sycl_gg_tile> mmid_tile_schedule_host;
 
     static std::unique_ptr<ggml_sycl_pool> new_pool_for_device(queue_ptr qptr, int device);
 

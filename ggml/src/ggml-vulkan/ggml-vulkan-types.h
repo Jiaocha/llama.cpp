@@ -1010,6 +1010,7 @@ struct vk_device_struct {
     vk_buffer sync_staging;
 
     ggml_backend_buffer_type buffer_type;
+    ggml_backend_buffer_type buffer_type_uma;
 
     bool disable_fusion;
     bool disable_host_visible_vidmem;
@@ -1430,4 +1431,3 @@ struct ggml_backend_vk_device_context {
     std::string pci_bus_id;
     int op_offload_min_batch_size;
 };
-

@@ -18,7 +18,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
           curl.exe -L --retry 3 -o C:\therock.tar.gz https://rocm.nightlies.amd.com/tarball/therock-dist-windows-gfx110X-all-7.11.0a20260120.tar.gz
           tar -xzf C:\therock.tar.gz -C C:\TheRock
-          Get-ChildItem C:\TheRock | Select-Object Name
+
+      - name: Setup MSVC env
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure
         shell: pwsh
@@ -26,7 +28,11 @@ jobs:
           $env:HIP_PATH = "C:/TheRock"
           $env:HIP_PLATFORM = "amd"
           $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl.exe -DCMAKE_CXX_COMPILER=clang-cl.exe `
+            -DCMAKE_HIP_COMPILER=C:/TheRock/lib/llvm/bin/clang.exe `
+            -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 `
+            -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
 
       - name: Build
         shell: pwsh

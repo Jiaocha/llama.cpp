@@ -179,3 +179,46 @@ def test_vision_embeddings(prompt, image_data, success):
         assert content[0]['embedding'] != content[2]['embedding']
     else:
         assert res.status_code != 200
+
+def test_props_does_not_expose_media_marker():
+    global server
+    server.start()
+    res = server.make_request("GET", "/props", data={})
+    assert res.status_code == 200
+    # a client that stores the /props response (e.g. an agent saving it as tool output)
+    # could leak the marker back into the chat text, so it must not be published
+    assert "media_marker" not in res.body
+
+def test_stray_media_marker_in_text_no_image():
+    global server
+    server.start()
+    res = server.make_request("POST", "/v1/chat/completions", data={
+        "max_tokens": 8,
+        "messages": [
+            {"role": "user", "content": "what is <__media__> ?"},
+        ],
+    })
+    # a marker string in the text without a matching image used to fail tokenization
+    assert res.status_code == 200
+    assert "assistant" == res.body["choices"][0]["message"]["role"]
+
+def test_stray_media_marker_in_text_with_image():
+    global server
+    server.start()
+    res = server.make_request("POST", "/v1/chat/completions", data={
+        "temperature": 0.0,
+        "top_k": 1,
+        "max_tokens": 8,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "What is this: <__media__>\n"},
+                {"type": "image_url", "image_url": {
+                    "url": get_img_url("IMG_URL_0"),
+                }},
+            ]},
+        ],
+    })
+    # the stray marker must not break the request, and the image must still work
+    assert res.status_code == 200
+    choice = res.body["choices"][0]
+    assert match_regex("(cat)+", choice["message"]["content"])

@@ -4620,7 +4620,6 @@ static json get_res_props(const server_context_meta & meta, const common_params 
             {"video",  meta.has_inp_video},
             {"audio",  meta.has_inp_audio},
         } },
-        { "media_marker",                get_media_marker() },
         { "endpoint_slots",              params.endpoint_slots },
         { "endpoint_props",              params.endpoint_props },
         { "endpoint_metrics",            params.endpoint_metrics },

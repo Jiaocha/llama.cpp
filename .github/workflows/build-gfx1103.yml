@@ -12,31 +12,26 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Download TheRock HIP SDK
+      - name: Download TheRock HIP SDK (7.11, clang known-good)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
-          curl.exe -L --retry 3 -o C:\therock.tar.gz https://rocm.nightlies.amd.com/tarball/therock-dist-windows-gfx110X-all-7.14.0a20260524.tar.gz
+          curl.exe -L --retry 3 -o C:\therock.tar.gz https://rocm.nightlies.amd.com/tarball/therock-dist-windows-gfx110X-all-7.11.0a20260120.tar.gz
           tar -xzf C:\therock.tar.gz -C C:\TheRock
           Get-ChildItem C:\TheRock | Select-Object Name
-
-      - name: Setup MSVC env
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure
         shell: pwsh
         run: |
           $env:HIP_PATH = "C:/TheRock"
-          cl.exe 2>&1 | Select-Object -First 1
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe `
-            -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 `
-            -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
+          $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
+          clang.exe --version
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
 
       - name: Build
         shell: pwsh
         run: |
-          $env:HIP_PATH = "C:/TheRock"
+          $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
           cmake --build build --config Release -j
 
       - name: Upload

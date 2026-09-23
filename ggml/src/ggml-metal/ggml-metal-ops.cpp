@@ -3566,7 +3566,9 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
         }
 
         const size_t smem = FATTN_SMEM(nsg);
-        GGML_ASSERT(smem <= props_dev->max_theadgroup_memory_size);
+        if (nqptg > OP_FLASH_ATTN_EXT_NQPSG) {
+            GGML_ASSERT(smem <= props_dev->max_theadgroup_memory_size);
+        }
 
         const int32_t ns10 = nb11_attn/nb10_attn;
         const int32_t ns20 = nb21_attn/nb20_attn;

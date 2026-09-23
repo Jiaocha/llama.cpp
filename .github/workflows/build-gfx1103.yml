@@ -1,0 +1,54 @@
+﻿name: Build llama.cpp HIP gfx1103
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download TheRock HIP SDK (gfx110X-all, incl gfx1103)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
+          curl.exe -L --retry 3 -o C:\therock.tar.gz https://rocm.nightlies.amd.com/tarball/therock-dist-windows-gfx110X-all-7.14.0a20260524.tar.gz
+          tar -xzf C:\therock.tar.gz -C C:\TheRock
+          Get-ChildItem C:\TheRock | Select-Object Name
+          Get-ChildItem C:\TheRock\bin -Filter *.exe | Select-Object Name
+
+      - name: Configure (HIP, gfx1103)
+        shell: pwsh
+        run: |
+          $env:HIP_PATH = "C:/TheRock"
+          $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
+          clang.exe --version
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_HIP=ON `
+            -DAMDGPU_TARGETS=gfx1103 `
+            -DGGML_NATIVE=OFF `
+            -DLLAMA_CURL=OFF `
+            -DLLAMA_HIPBLAS=ON
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
+          cmake --build build --config Release -j
+
+      - name: List artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem build\bin -Recurse | Select-Object FullName
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-gfx1103
+          path: |
+            build/bin/**

@@ -5,17 +5,12 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: List MSVC toolsets
-        shell: pwsh
-        run: |
-          Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Tools\MSVC" -ErrorAction SilentlyContinue | Select-Object FullName
 
       - name: Download TheRock HIP SDK
         shell: pwsh
@@ -24,10 +19,8 @@ jobs:
           curl.exe -L --retry 3 -o C:\therock.tar.gz https://rocm.nightlies.amd.com/tarball/therock-dist-windows-gfx110X-all-7.11.0a20260120.tar.gz
           tar -xzf C:\therock.tar.gz -C C:\TheRock
 
-      - name: Setup MSVC env (pin 14.4x toolset)
+      - name: Setup MSVC env
         uses: ilammy/msvc-dev-cmd@v1
-        with:
-          vcversion: 14.42.34433
 
       - name: Configure
         shell: pwsh

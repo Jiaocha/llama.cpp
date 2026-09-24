@@ -28,7 +28,7 @@ jobs:
           $env:HIP_PATH = "C:/TheRock"
           $env:HIP_PLATFORM = "amd"
           $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 -DGGML_CUDA_FORCE_MMQ=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
 
       - name: Build
         shell: pwsh
@@ -36,8 +36,24 @@ jobs:
           $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
           cmake --build build --config Release -j
 
+      - name: Bundle self-contained HIP runtime
+        shell: pwsh
+        run: |
+          $bin = "build/bin"
+          Write-Output "=== TheRock top-level ==="
+          Get-ChildItem C:\TheRock | Select-Object Name
+          Get-ChildItem C:\TheRock\bin -Filter *.dll | Copy-Item -Destination $bin -Force
+          $rlib = Get-ChildItem C:\TheRock -Recurse -Directory -Filter "library" | Where-Object { $_.FullName -match "rocblas" } | Select-Object -First 1
+          if ($rlib) { New-Item -ItemType Directory -Force "$bin/rocblas" | Out-Null; Copy-Item $rlib.FullName "$bin/rocblas/library" -Recurse -Force }
+          $hlib = Get-ChildItem C:\TheRock -Recurse -Directory -Filter "library" | Where-Object { $_.FullName -match "hipblaslt" } | Select-Object -First 1
+          if ($hlib) { New-Item -ItemType Directory -Force "$bin/hipblaslt" | Out-Null; Copy-Item $hlib.FullName "$bin/hipblaslt/library" -Recurse -Force }
+          Write-Output "=== packaged runtime dlls ==="
+          Get-ChildItem $bin -Filter *.dll | Select-Object Name
+          Write-Output "=== gfx1103 rocblas kernel count ==="
+          (Get-ChildItem "$bin/rocblas/library" -Filter "*gfx1103*" -ErrorAction SilentlyContinue).Count
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: llama-gfx1103-master
+          name: llama-gfx1103-portable
           path: build/bin/**

@@ -28,7 +28,7 @@ jobs:
           $env:HIP_PATH = "C:/TheRock"
           $env:HIP_PLATFORM = "amd"
           $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1103 -DGGML_CUDA_FORCE_MMQ=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF
 
       - name: Build
         shell: pwsh

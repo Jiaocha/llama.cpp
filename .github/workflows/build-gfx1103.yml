@@ -36,18 +36,15 @@ jobs:
           $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
           cmake --build build --config Release -j
 
-      - name: Bundle self-contained HIP runtime
+      - name: Bundle self-contained HIP runtime (minimal)
         shell: pwsh
         run: |
           $bin = "build/bin"
-          Write-Output "=== TheRock top-level ==="
-          Get-ChildItem C:\TheRock | Select-Object Name
-          Get-ChildItem C:\TheRock\bin -Filter *.dll | Copy-Item -Destination $bin -Force
+          $excl = @('MIOpen','hipdnn','fftw','rocfft','rocrand','hipsparse','rocsparse','hipsolver','hipfft','hiprtc','amdocl','cltrace','mtmd','rocmopen','hipblaslt','rocm_smi','amd_smi')
+          Get-ChildItem C:\TheRock\bin -Filter *.dll | Where-Object { $n=$_.Name.ToLower(); -not ($excl | Where-Object { $n.StartsWith($_.ToLower()) }) } | Copy-Item -Destination $bin -Force
           $rlib = Get-ChildItem C:\TheRock -Recurse -Directory -Filter "library" | Where-Object { $_.FullName -match "rocblas" } | Select-Object -First 1
           if ($rlib) { New-Item -ItemType Directory -Force "$bin/rocblas" | Out-Null; Copy-Item $rlib.FullName "$bin/rocblas/library" -Recurse -Force }
-          $hlib = Get-ChildItem C:\TheRock -Recurse -Directory -Filter "library" | Where-Object { $_.FullName -match "hipblaslt" } | Select-Object -First 1
-          if ($hlib) { New-Item -ItemType Directory -Force "$bin/hipblaslt" | Out-Null; Copy-Item $hlib.FullName "$bin/hipblaslt/library" -Recurse -Force }
-          Write-Output "=== packaged runtime dlls ==="
+          Write-Output "=== packaged runtime dlls (minimal) ==="
           Get-ChildItem $bin -Filter *.dll | Select-Object Name
           Write-Output "=== gfx1103 rocblas kernel count ==="
           (Get-ChildItem "$bin/rocblas/library" -Filter "*gfx1103*" -ErrorAction SilentlyContinue).Count

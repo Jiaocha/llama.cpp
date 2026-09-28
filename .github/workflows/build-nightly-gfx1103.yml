@@ -1,0 +1,253 @@
+name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
+
+on:
+  schedule:
+    # 每天北京时间凌晨 03:00 (UTC 19:00) 自动执行
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 'Target llama.cpp repository'
+        type: string
+        required: false
+        default: 'ggml-org/llama.cpp'
+      upstream_ref:
+        description: 'Branch, tag, or commit to build'
+        type: string
+        required: false
+        default: 'master'
+      create_release:
+        description: 'Publish as GitHub Release (nightly-gfx1103 tag)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-780m-gfx1103:
+    runs-on: windows-2022
+    steps:
+      # 1. 动态拉取当天最新的 llama.cpp 源码 (默认直接拉取官方 ggml-org/llama.cpp:master)
+      - name: Checkout latest llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.upstream_repo || 'ggml-org/llama.cpp' }}
+          ref: ${{ github.event.inputs.upstream_ref || 'master' }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Record Build Metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $commit = git rev-parse --short HEAD
+          $commitFull = git rev-parse HEAD
+          $dateStr = Get-Date -Format "yyyy-MM-dd"
+          "LLAMA_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LLAMA_COMMIT_FULL=$commitFull" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BUILD_DATE=$dateStr" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Building llama.cpp commit: $commit on $dateStr"
+
+      # 2. 配置 MSVC 编译环境与 Ninja
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Ninja
+        uses: ashutoshvarma/setup-ninja@master
+        with:
+          version: 1.11.1
+
+      # 3. 动态探测并下载 AMD 官方当天最新的 TheRock 780M (gfx1103) SDK
+      - name: Dynamic Detect & Download Latest TheRock SDK
+        id: therock
+        shell: pwsh
+        run: |
+          Write-Host "Querying AMD official repository for the latest TheRock Windows gfx110X tarball..."
+          $tarUrl = ""
+          $tarName = ""
+          
+          try {
+            $resp = Invoke-WebRequest -Uri "https://nightly.repo.amd.com/rocm/core/tarball/" -UseBasicParsing -TimeoutSec 30
+            if ($resp.Content -match 'const files = (\[.*?\]);') {
+              $files = $Matches[1] | ConvertFrom-Json
+              # 匹配适用于 Windows gfx110X (包含 gfx1103 / Radeon 780M) 的最新 10.x 每日发行包
+              $matched = $files | Where-Object { 
+                $_.name -match '^therock-dist-windows-gfx110X-all-10\..*\.tar\.gz$' -and $_.name -notmatch 'tests' 
+              } | Sort-Object mtime -Descending | Select-Object -First 1
+              
+              if ($matched) {
+                $tarName = $matched.name
+                $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
+                Write-Host "Found latest AMD TheRock Nightly: $tarName (mtime: $($matched.mtime))"
+              }
+            }
+          } catch {
+            Write-Host "[warn] Failed to dynamically parse repository index: $_"
+          }
+          
+          # 容错降级：若动态探测因网络波动失败，自动使用已验证的高可用版本
+          if (-not $tarUrl) {
+            $tarName = "therock-dist-windows-gfx110X-all-10.2.0a20260927.tar.gz"
+            $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
+            Write-Host "[info] Falling back to baseline TheRock SDK: $tarName"
+          }
+          
+          $sdkVer = $tarName -replace '^therock-dist-windows-gfx110X-all-', '' -replace '\.tar\.gz$', ''
+          "THEROCK_VER=$sdkVer" | Out-File -FilePath $env:GITHUB_ENV -Append
+          
+          New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
+          Write-Host "Downloading TheRock SDK from $tarUrl ..."
+          curl.exe -L --retry 5 --retry-delay 3 -o C:\therock.tar.gz $tarUrl
+          
+          Write-Host "Extracting TheRock SDK to C:\TheRock ..."
+          tar -xzf C:\therock.tar.gz -C C:\TheRock
+          
+          # 验证核心组件
+          if (-not (Test-Path "C:\TheRock\bin\amdhip64_7.dll")) {
+            throw "Invalid TheRock installation: amdhip64_7.dll not found."
+          }
+          Write-Host "TheRock SDK Ready: $sdkVer"
+
+      # 4. 配置 CMake 并针对 Radeon 780M (gfx1103) 构建
+      - name: Configure and Build
+        shell: pwsh
+        run: |
+          $env:HIP_PATH = "C:/TheRock"
+          $env:HIP_PLATFORM = "amd"
+          $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
+          
+          Write-Host "Configuring CMake for gfx1103..."
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_HIP=ON `
+            -DAMDGPU_TARGETS=gfx1103 `
+            -DGGML_NATIVE=OFF `
+            -DLLAMA_CURL=ON `
+            -DCMAKE_C_COMPILER="C:/TheRock/bin/clang.exe" `
+            -DCMAKE_CXX_COMPILER="C:/TheRock/bin/clang++.exe"
+          
+          Write-Host "Compiling llama.cpp..."
+          cmake --build build --config Release -j 4
+
+      # 5. 按照 TheRock 10.2 标准组装绿色便携包 (.kpack 架构)
+      - name: Assemble Portable Package
+        id: pack
+        shell: pwsh
+        run: |
+          $packDir = "dist/llama-gfx1103-hip-portable"
+          $binDir = "$packDir/bin"
+          $kpackDir = "$packDir/.kpack"
+          
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $kpackDir | Out-Null
+          
+          # 复制编译生成的 llama 二进制与动态库
+          Copy-Item build/bin/*.exe $binDir/ -Force
+          Copy-Item build/bin/*.dll $binDir/ -Force
+          
+          # 复制 TheRock 核心运行时 DLL (使便携包自包含，解压即用)
+          $runtimeDlls = @(
+            "amdhip64_7.dll", "amd_comgr.dll", "hipblas.dll", "rocblas.dll", 
+            "rocsolver.dll", "hipsolver.dll", "libhipblaslt.dll", "origami.dll", 
+            "rocm-openblas.dll", "rocm-openblas64.dll", "rocm_kpack.dll"
+          )
+          foreach ($dll in $runtimeDlls) {
+            if (Test-Path "C:\TheRock\bin\$dll") {
+              Copy-Item "C:\TheRock\bin\$dll" $binDir/ -Force
+            }
+          }
+          Get-ChildItem "C:\TheRock\bin" -Filter "hiprtc*.dll" | ForEach-Object {
+            Copy-Item $_.FullName $binDir/ -Force
+          }
+          
+          # 复制 .kpack 矩阵算子库到 bin/ 的上一级目录 (ROCm 10.2 标准相对寻址路径)
+          if (Test-Path "C:\TheRock\.kpack\blas_lib_gfx1103.kpack") {
+            Copy-Item "C:\TheRock\.kpack\blas_lib_gfx1103.kpack" $kpackDir/ -Force
+          } else {
+            Write-Host "[warn] .kpack/blas_lib_gfx1103.kpack not found in root, searching..."
+            Get-ChildItem "C:\TheRock" -Recurse -Filter "blas_lib_gfx1103.kpack" | Select-Object -First 1 | ForEach-Object {
+              Copy-Item $_.FullName $kpackDir/ -Force
+            }
+          }
+          
+          # 写入便捷启动脚本
+          @'
+@echo off
+chcp 65001 >nul 2>&1
+"%~dp0bin\llama-cli.exe" %*
+'@ | Set-Content -Path "$packDir/llama-cli.bat" -Encoding ASCII
+
+          @'
+@echo off
+chcp 65001 >nul 2>&1
+"%~dp0bin\llama-server.exe" %*
+'@ | Set-Content -Path "$packDir/llama-server.bat" -Encoding ASCII
+
+          @'
+@echo off
+chcp 65001 >nul 2>&1
+"%~dp0bin\llama-bench.exe" %*
+'@ | Set-Content -Path "$packDir/llama-bench.bat" -Encoding ASCII
+
+          # 写入版本自述文件
+          @"
+# llama.cpp HIP Portable - Radeon 780M (gfx1103) Nightly
+==============================================================
+- 构建时间: $($env:BUILD_DATE) (每日凌晨 03:00 自动构建)
+- llama.cpp Commit: $($env:LLAMA_COMMIT_FULL)
+- TheRock ROCm 运行时: $($env:THEROCK_VER)
+- 适配硬件: AMD Radeon 780M (gfx1103 / Ryzen 8845HS / 7840HS / 8700G)
+- 特性: 内嵌完整 .kpack 算子包与 HIP 运行时，解压即用，无需安装 ROCm。
+
+## 常用命令
+- 命令行对话: llama-cli.bat -m 模型.gguf -ngl 99 -fa on
+- WebUI/API 服务: llama-server.bat -m 模型.gguf -ngl 99 -fa on --port 8080
+"@ | Set-Content -Path "$packDir/README.md" -Encoding UTF8
+          
+          # 打包 ZIP 并生成 SHA256 校验码
+          $zipName = "llama-$($env:BUILD_DATE)-b$($env:LLAMA_COMMIT)-win-hip-gfx1103.zip"
+          Compress-Archive -Path "$packDir/*" -DestinationPath "dist/$zipName" -Force
+          $sha256 = (Get-FileHash -Path "dist/$zipName" -Algorithm SHA256).Hash.ToLower()
+          "$sha256  $zipName" | Set-Content -Path "dist/$zipName.sha256" -Encoding ASCII
+          
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP_SHA256=$sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Created archive: dist/$zipName"
+          Write-Host "SHA256: $sha256"
+
+      # 6. 上传 Artifact (保留 14 天)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: |
+            dist/${{ env.ZIP_NAME }}
+            dist/${{ env.ZIP_NAME }}.sha256
+          retention-days: 14
+
+      # 7. 发布/更新 GitHub Nightly Release 并记录版本信息
+      - name: Publish or Update Nightly Release
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release != 'false' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-gfx1103
+          name: "llama.cpp Nightly (Radeon 780M gfx1103) - ${{ env.BUILD_DATE }}"
+          body: |
+            ## 🚀 llama.cpp Windows 11 Nightly Build for AMD Radeon 780M (gfx1103)
+            
+            ### 📋 构建版本元数据记录 (Build Metadata)
+            - **构建日期**: `${{ env.BUILD_DATE }}` (每日凌晨 03:00 自动构建)
+            - **llama.cpp Commit**: [`${{ env.LLAMA_COMMIT }}`](https://github.com/ggml-org/llama.cpp/commit/${{ env.LLAMA_COMMIT_FULL }})
+            - **TheRock ROCm SDK**: `${{ env.THEROCK_VER }}`
+            - **硬件架构**: AMD Radeon 780M (`gfx1103` / Ryzen 8845HS / 7840HS / 8700G)
+            - **文件 SHA256**: `${{ env.ZIP_SHA256 }}`
+            
+            ### 📦 使用说明
+            1. 下载下方的 `${{ env.ZIP_NAME }}` 绿色压缩包；
+            2. 解压到任意目录（**纯绿色便携包，已内嵌 .kpack 内核与运行时，无需配置环境变量，无需安装 ROCm**）；
+            3. 双击 `llama-server.bat -m 模型.gguf -ngl 99 -fa on` 启动 API/WebUI 服务，或使用 `llama-cli.bat` 终端对话。
+          files: |
+            dist/${{ env.ZIP_NAME }}
+            dist/${{ env.ZIP_NAME }}.sha256

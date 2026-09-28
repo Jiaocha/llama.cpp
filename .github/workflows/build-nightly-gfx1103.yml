@@ -124,9 +124,7 @@ jobs:
             -DGGML_HIP=ON `
             -DAMDGPU_TARGETS=gfx1103 `
             -DGGML_NATIVE=OFF `
-            -DLLAMA_CURL=ON `
-            -DCMAKE_C_COMPILER="C:/TheRock/bin/clang.exe" `
-            -DCMAKE_CXX_COMPILER="C:/TheRock/bin/clang++.exe"
+            -DLLAMA_CURL=ON
           
           Write-Host "Compiling llama.cpp..."
           cmake --build build --config Release -j 4

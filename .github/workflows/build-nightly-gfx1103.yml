@@ -1,6 +1,6 @@
 name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
 
-on:
+'on':
   schedule:
     # 每天北京时间凌晨 03:00 (UTC 19:00) 自动执行
     - cron: '0 19 * * *'
@@ -173,38 +173,25 @@ jobs:
           }
           
           # 写入便捷启动脚本
-          @'
-@echo off
-chcp 65001 >nul 2>&1
-"%~dp0bin\llama-cli.exe" %*
-'@ | Set-Content -Path "$packDir/llama-cli.bat" -Encoding ASCII
-
-          @'
-@echo off
-chcp 65001 >nul 2>&1
-"%~dp0bin\llama-server.exe" %*
-'@ | Set-Content -Path "$packDir/llama-server.bat" -Encoding ASCII
-
-          @'
-@echo off
-chcp 65001 >nul 2>&1
-"%~dp0bin\llama-bench.exe" %*
-'@ | Set-Content -Path "$packDir/llama-bench.bat" -Encoding ASCII
+          Set-Content -Path "$packDir/llama-cli.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-cli.exe`" %*" -Encoding ASCII
+          Set-Content -Path "$packDir/llama-server.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-server.exe`" %*" -Encoding ASCII
+          Set-Content -Path "$packDir/llama-bench.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-bench.exe`" %*" -Encoding ASCII
 
           # 写入版本自述文件
-          @"
-# llama.cpp HIP Portable - Radeon 780M (gfx1103) Nightly
-==============================================================
-- 构建时间: $($env:BUILD_DATE) (每日凌晨 03:00 自动构建)
-- llama.cpp Commit: $($env:LLAMA_COMMIT_FULL)
-- TheRock ROCm 运行时: $($env:THEROCK_VER)
-- 适配硬件: AMD Radeon 780M (gfx1103 / Ryzen 8845HS / 7840HS / 8700G)
-- 特性: 内嵌完整 .kpack 算子包与 HIP 运行时，解压即用，无需安装 ROCm。
-
-## 常用命令
-- 命令行对话: llama-cli.bat -m 模型.gguf -ngl 99 -fa on
-- WebUI/API 服务: llama-server.bat -m 模型.gguf -ngl 99 -fa on --port 8080
-"@ | Set-Content -Path "$packDir/README.md" -Encoding UTF8
+          $readmeLines = @(
+            "# llama.cpp HIP Portable - Radeon 780M (gfx1103) Nightly",
+            "==============================================================",
+            "- 构建时间: $($env:BUILD_DATE) (每日凌晨 03:00 自动构建)",
+            "- llama.cpp Commit: $($env:LLAMA_COMMIT_FULL)",
+            "- TheRock ROCm 运行时: $($env:THEROCK_VER)",
+            "- 适配硬件: AMD Radeon 780M (gfx1103 / Ryzen 8845HS / 7840HS / 8700G)",
+            "- 特性: 内嵌完整 .kpack 算子包与 HIP 运行时，解压即用，无需安装 ROCm。",
+            "",
+            "## 常用命令",
+            "- 命令行对话: llama-cli.bat -m 模型.gguf -ngl 99 -fa on",
+            "- WebUI/API 服务: llama-server.bat -m 模型.gguf -ngl 99 -fa on --port 8080"
+          )
+          Set-Content -Path "$packDir/README.md" -Value ($readmeLines -join "`r`n") -Encoding UTF8
           
           # 打包 ZIP 并生成 SHA256 校验码
           $zipName = "llama-$($env:BUILD_DATE)-b$($env:LLAMA_COMMIT)-win-hip-gfx1103.zip"

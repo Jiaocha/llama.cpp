@@ -146,17 +146,8 @@ jobs:
           Copy-Item build/bin/*.dll $binDir/ -Force
           
           # 复制 TheRock 核心运行时 DLL (使便携包自包含，解压即用)
-          $runtimeDlls = @(
-            "amdhip64_7.dll", "amd_comgr.dll", "hipblas.dll", "rocblas.dll", 
-            "rocsolver.dll", "hipsolver.dll", "libhipblaslt.dll", "origami.dll", 
-            "rocm-openblas.dll", "rocm-openblas64.dll", "rocm_kpack.dll"
-          )
-          foreach ($dll in $runtimeDlls) {
-            if (Test-Path "C:\TheRock\bin\$dll") {
-              Copy-Item "C:\TheRock\bin\$dll" $binDir/ -Force
-            }
-          }
-          Get-ChildItem "C:\TheRock\bin" -Filter "hiprtc*.dll" | ForEach-Object {
+          # 自动完整复制 C:\TheRock\bin 下所有核心依赖动态库 (含 libtensilelite-host.dll、rocblas.dll、amdhip64_7.dll 等)
+          Get-ChildItem "C:\TheRock\bin" -Filter "*.dll" | ForEach-Object {
             Copy-Item $_.FullName $binDir/ -Force
           }
           

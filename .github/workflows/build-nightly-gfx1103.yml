@@ -151,6 +151,11 @@ jobs:
             Copy-Item $_.FullName $binDir/ -Force
           }
           
+          # 复制 rocblas 离线内核子目录 (包含 TensileLibrary_*.dat 等 150 个 gfx1103 算子)
+          if (Test-Path "C:\TheRock\bin\rocblas") {
+            Copy-Item -Recurse -Force "C:\TheRock\bin\rocblas" "$binDir/rocblas"
+          }
+          
           # 复制 .kpack 矩阵算子库到 bin/ 的上一级目录 (ROCm 10.2 标准相对寻址路径)
           if (Test-Path "C:\TheRock\.kpack\blas_lib_gfx1103.kpack") {
             Copy-Item "C:\TheRock\.kpack\blas_lib_gfx1103.kpack" $kpackDir/ -Force

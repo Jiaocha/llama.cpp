@@ -141,17 +141,37 @@ jobs:
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           New-Item -ItemType Directory -Force -Path $kpackDir | Out-Null
           
-          # 复制编译生成的 llama 二进制与动态库
-          Copy-Item build/bin/*.exe $binDir/ -Force
+          # 复制编译生成的 llama 二进制与动态库 (排除开发单元测试程序)
+          Get-ChildItem "build/bin" -Filter "*.exe" | Where-Object { $_.Name -notmatch '^test-' } | ForEach-Object {
+            Copy-Item $_.FullName $binDir/ -Force
+          }
           Copy-Item build/bin/*.dll $binDir/ -Force
           
-          # 复制 TheRock 核心运行时 DLL (使便携包自包含，解压即用)
-          # 自动完整复制 C:\TheRock\bin 下所有核心依赖动态库 (含 libtensilelite-host.dll、rocblas.dll、amdhip64_7.dll 等)
-          Get-ChildItem "C:\TheRock\bin" -Filter "*.dll" | ForEach-Object {
+          # 复制 TheRock 核心运行时 DLL (精准白名单，剔除与大模型无关的 MIOpen/rocfft/rocsparse 等 ~1.5GB 卷积/信号处理库)
+          $runtimeDlls = @(
+            "amdhip64_7.dll",
+            "amd_comgr.dll",
+            "hipblas.dll",
+            "rocblas.dll",
+            "rocsolver.dll",
+            "hipsolver.dll",
+            "libhipblaslt.dll",
+            "libtensilelite-host.dll",
+            "origami.dll",
+            "rocm-openblas.dll",
+            "rocm-openblas64.dll",
+            "rocm_kpack.dll"
+          )
+          foreach ($dll in $runtimeDlls) {
+            if (Test-Path "C:\TheRock\bin\$dll") {
+              Copy-Item "C:\TheRock\bin\$dll" $binDir/ -Force
+            }
+          }
+          Get-ChildItem "C:\TheRock\bin" -Filter "hiprtc*.dll" | ForEach-Object {
             Copy-Item $_.FullName $binDir/ -Force
           }
           
-          # 复制 rocblas 离线内核子目录 (包含 TensileLibrary_*.dat 等 150 个 gfx1103 算子)
+          # 复制 rocblas 离线内核子目录 (包含 TensileLibrary_*.dat 等 150 个 gfx1103 算子，仅约 16MB)
           if (Test-Path "C:\TheRock\bin\rocblas") {
             Copy-Item -Recurse -Force "C:\TheRock\bin\rocblas" "$binDir/rocblas"
           }

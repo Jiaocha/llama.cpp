@@ -31,6 +31,11 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
         type: boolean
         required: false
         default: false
+      gate_check_only:
+        description: 'Run only the update gate on ubuntu (no Windows build minutes)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -84,7 +89,7 @@ jobs:
   build-windows-780m-gfx1103:
     name: Build llama.cpp HIP/gfx1103 package
     needs: check-update
-    if: needs.check-update.outputs.should_build == 'true'
+    if: ${{ !cancelled() && needs.check-update.outputs.should_build == 'true' && github.event.inputs.gate_check_only != 'true' }}
     runs-on: windows-2022
     # Windows runner 按 2x 计费；挂起的构建不能按默认 360 分钟烧分钟数
     timeout-minutes: 45

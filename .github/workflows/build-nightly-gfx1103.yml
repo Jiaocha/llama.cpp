@@ -16,25 +16,93 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
         type: string
         required: false
         default: 'master'
+      therock_version:
+        description: 'Pin TheRock tarball version, e.g. 10.2.0a20261008 (empty = auto detect)'
+        type: string
+        required: false
+        default: ''
       create_release:
         description: 'Publish as GitHub Release (nightly-gfx1103 tag)'
         type: boolean
         required: false
         default: true
+      force_rebuild:
+        description: 'Ignore the update gate and build immediately'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
 
+# 定时任务与手动触发不得并发跑两份构建（重复消耗 Windows 分钟）
+concurrency:
+  group: nightly-gfx1103-build
+  cancel-in-progress: false
+
 jobs:
+  # 0. 版本门控：只有上游 llama.cpp 出现影响本包的更新、或 TheRock SDK 基线版本升级时才构建。
+  #    上次构建的 commit / SDK 版本 / 时间戳从 nightly release 正文的 ci-build-state 标记读回。
+  #    阈值可用仓库 Variables 调整：MIN_INTERVAL_HOURS(默认 72) / MAX_STALE_HOURS(默认 168) /
+  #    THEROCK_VERSION / UPSTREAM_REPO / UPSTREAM_REF / NIGHTLY_RELEASE_TAG。
+  check-update:
+    name: Check for a new version (gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_REPO: ${{ github.event.inputs.upstream_repo || vars.UPSTREAM_REPO || 'ggml-org/llama.cpp' }}
+      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || vars.UPSTREAM_REF || 'master' }}
+      RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
+      PIN_THEROCK: ${{ github.event.inputs.therock_version || vars.THEROCK_VERSION }}
+      MIN_INTERVAL_HOURS: ${{ vars.MIN_INTERVAL_HOURS || '72' }}
+      MAX_STALE_HOURS: ${{ vars.MAX_STALE_HOURS || '168' }}
+      FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || 'false' }}
+      EVENT_NAME: ${{ github.event_name }}
+    outputs:
+      should_build: ${{ steps.gate.outputs.should_build }}
+      reason: ${{ steps.gate.outputs.reason }}
+      upstream_repo: ${{ steps.gate.outputs.upstream_repo }}
+      upstream_ref: ${{ steps.gate.outputs.upstream_ref }}
+      upstream_sha: ${{ steps.gate.outputs.upstream_sha }}
+      therock_version: ${{ steps.gate.outputs.therock_version }}
+    steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+
+      - name: Evaluate update gate
+        id: gate
+        run: bash .github/scripts/nightly-gate.sh
+
   build-windows-780m-gfx1103:
+    name: Build llama.cpp HIP/gfx1103 package
+    needs: check-update
+    if: needs.check-update.outputs.should_build == 'true'
     runs-on: windows-2022
+    # Windows runner 按 2x 计费；挂起的构建不能按默认 360 分钟烧分钟数
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_REPO: ${{ needs.check-update.outputs.upstream_repo }}
+      UPSTREAM_REF: ${{ needs.check-update.outputs.upstream_ref }}
+      PRESET_THEROCK: ${{ needs.check-update.outputs.therock_version }}
+      RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
+      KEEP_ASSETS: ${{ vars.KEEP_NIGHTLY_ASSETS || '7' }}
     steps:
       # 1. 动态拉取当天最新的 llama.cpp 源码 (默认直接拉取官方 ggml-org/llama.cpp:master)
       - name: Checkout latest llama.cpp
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.upstream_repo || 'ggml-org/llama.cpp' }}
-          ref: ${{ github.event.inputs.upstream_ref || 'master' }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
           submodules: recursive
           fetch-depth: 1
 
@@ -45,9 +113,12 @@ jobs:
           $commit = git rev-parse --short HEAD
           $commitFull = git rev-parse HEAD
           $dateStr = Get-Date -Format "yyyy-MM-dd"
+          $nowUtc = (Get-Date).ToUniversalTime()
+          $builtAt = '{0:0000}-{1:00}-{2:00}T{3:00}:{4:00}:{5:00}Z' -f $nowUtc.Year, $nowUtc.Month, $nowUtc.Day, $nowUtc.Hour, $nowUtc.Minute, $nowUtc.Second
           "LLAMA_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append
           "LLAMA_COMMIT_FULL=$commitFull" | Out-File -FilePath $env:GITHUB_ENV -Append
           "BUILD_DATE=$dateStr" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BUILT_AT_UTC=$builtAt" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Building llama.cpp commit: $commit on $dateStr"
 
       # 2. 配置 MSVC 编译环境与 Ninja
@@ -95,6 +166,13 @@ jobs:
           }
           
           $sdkVer = $tarName -replace '^therock-dist-windows-gfx110X-all-', '' -replace '\.tar\.gz$', ''
+          # 门控 job 已确定过 SDK 版本：优先使用它，保证构建用的 SDK 与门控判断一致
+          if ($env:PRESET_THEROCK) {
+            $tarName = "therock-dist-windows-gfx110X-all-$env:PRESET_THEROCK.tar.gz"
+            $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
+            $sdkVer = $env:PRESET_THEROCK
+            Write-Host "[info] Using TheRock version pinned by the update gate: $tarName"
+          }
           "THEROCK_VER=$sdkVer" | Out-File -FilePath $env:GITHUB_ENV -Append
           
           New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
@@ -233,7 +311,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release != 'false' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: nightly-gfx1103
+          tag_name: ${{ env.RELEASE_TAG }}
           name: "llama.cpp Nightly (Radeon 780M gfx1103) - ${{ env.BUILD_DATE }}"
           body: |
             ## 🚀 llama.cpp Windows 11 Nightly Build for AMD Radeon 780M (gfx1103)
@@ -249,6 +327,35 @@ jobs:
             1. 下载下方的 `${{ env.ZIP_NAME }}` 绿色压缩包；
             2. 解压到任意目录（**纯绿色便携包，已内嵌 .kpack 内核与运行时，无需配置环境变量，无需安装 ROCm**）；
             3. 双击 `llama-server.bat -m 模型.gguf -ngl 99 -fa on` 启动 API/WebUI 服务，或使用 `llama-cli.bat` 终端对话。
+
+            <!-- ci-build-state: {"sha":"${{ env.LLAMA_COMMIT_FULL }}","therock":"${{ env.THEROCK_VER }}","built_at":"${{ env.BUILT_AT_UTC }}"} -->
           files: |
             dist/${{ env.ZIP_NAME }}
             dist/${{ env.ZIP_NAME }}.sha256
+
+      # 8. 只保留最近 KEEP_ASSETS 个 ZIP（连同其 .sha256），避免 nightly release 无限膨胀
+      - name: Trim old nightly assets
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release != 'false' }}
+        shell: pwsh
+        run: |
+          $keep = if ($env:KEEP_ASSETS) { [int]$env:KEEP_ASSETS } else { 7 }
+          $relId = (gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json).id
+          $rows = gh api "repos/$env:GITHUB_REPOSITORY/releases/$relId/assets?per_page=100" --paginate `
+            --jq '.[] | [(.id|tostring), .name, .created_at] | @tsv'
+          if (-not $rows) { Write-Host "No assets; nothing to trim."; exit 0 }
+          $assets = $rows | ForEach-Object {
+            $c = $_ -split "`t"
+            [pscustomobject]@{ Id = [int64]$c[0]; Name = $c[1]; Created = $c[2] }
+          }
+          # 以 zip 为基准保留最新 $keep 个（及其配套 .sha256）
+          $stems = $assets | Where-Object { $_.Name -like '*.zip' } |
+            Sort-Object Created -Descending | Select-Object -First $keep -ExpandProperty Name
+          $doomed = $assets | Where-Object {
+            $stem = if ($_.Name -like '*.zip.sha256') { $_.Name -replace '\.sha256$', '' } else { $_.Name }
+            ($_.Name -like '*.zip' -or $_.Name -like '*.zip.sha256') -and ($stems -notcontains $stem)
+          }
+          Write-Host "Keeping $($stems.Count) zips, removing $($doomed.Count) assets"
+          foreach ($a in $doomed) {
+            Write-Host "  deleting: $($a.Name) (id=$($a.Id))"
+            gh api -X DELETE "repos/$env:GITHUB_REPOSITORY/releases/assets/$($a.Id)" | Out-Null
+          }

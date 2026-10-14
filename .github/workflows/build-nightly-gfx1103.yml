@@ -2,8 +2,8 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
 
 'on':
   schedule:
-    # 每天北京时间凌晨 03:00 (UTC 19:00) 自动执行
-    - cron: '0 19 * * *'
+    # 每天北京时间 06:00 (UTC 22:00) 自动执行（国内外均较空闲的时段）
+    - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
       upstream_repo:
@@ -48,7 +48,7 @@ concurrency:
 jobs:
   # 0. 版本门控：只有上游 llama.cpp 出现影响本包的更新、或 TheRock SDK 基线版本升级时才构建。
   #    上次构建的 commit / SDK 版本 / 时间戳从 nightly release 正文的 ci-build-state 标记读回。
-  #    阈值可用仓库 Variables 调整：MIN_INTERVAL_HOURS(默认 72) / MAX_STALE_HOURS(默认 168) /
+  #    阈值可用仓库 Variables 调整：MIN_INTERVAL_HOURS(默认 0) / MAX_STALE_HOURS(默认 168) /
   #    THEROCK_VERSION / UPSTREAM_REPO / UPSTREAM_REF / NIGHTLY_RELEASE_TAG。
   check-update:
     name: Check for a new version (gate)
@@ -62,7 +62,7 @@ jobs:
       UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || vars.UPSTREAM_REF || 'master' }}
       RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
       PIN_THEROCK: ${{ github.event.inputs.therock_version || vars.THEROCK_VERSION }}
-      MIN_INTERVAL_HOURS: ${{ vars.MIN_INTERVAL_HOURS || '72' }}
+      MIN_INTERVAL_HOURS: ${{ vars.MIN_INTERVAL_HOURS || '0' }}
       MAX_STALE_HOURS: ${{ vars.MAX_STALE_HOURS || '168' }}
       FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || 'false' }}
       EVENT_NAME: ${{ github.event_name }}

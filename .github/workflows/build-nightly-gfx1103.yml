@@ -278,7 +278,7 @@ jobs:
           $readmeLines = @(
             "# llama.cpp HIP Portable - Radeon 780M (gfx1103) Nightly",
             "==============================================================",
-            "- 构建时间: $($env:BUILD_DATE) (每日凌晨 03:00 自动构建)",
+            "- 构建时间: $($env:BUILD_DATE) (每日凌晨 06:00 自动构建)",
             "- llama.cpp Commit: $($env:LLAMA_COMMIT_FULL)",
             "- TheRock ROCm 运行时: $($env:THEROCK_VER)",
             "- 适配硬件: AMD Radeon 780M (gfx1103 / Ryzen 8845HS / 7840HS / 8700G)",
@@ -322,7 +322,7 @@ jobs:
             ## 🚀 llama.cpp Windows 11 Nightly Build for AMD Radeon 780M (gfx1103)
             
             ### 📋 构建版本元数据记录 (Build Metadata)
-            - **构建日期**: `${{ env.BUILD_DATE }}` (每日凌晨 03:00 自动构建)
+            - **构建日期**: `${{ env.BUILD_DATE }}` (每日凌晨 06:00 自动构建)
             - **llama.cpp Commit**: [`${{ env.LLAMA_COMMIT }}`](https://github.com/ggml-org/llama.cpp/commit/${{ env.LLAMA_COMMIT_FULL }})
             - **TheRock ROCm SDK**: `${{ env.THEROCK_VER }}`
             - **硬件架构**: AMD Radeon 780M (`gfx1103` / Ryzen 8845HS / 7840HS / 8700G)

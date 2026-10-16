@@ -213,7 +213,7 @@ fi
 
 # Single API call: one header line with compare metadata, then one line per changed filename.
 CMP="$(gh api "repos/${UPSTREAM_REPO}/compare/${LAST_SHA}...${HEAD_SHA}" \
-  --jq '["H", (.status // "unknown"), (.total_commits // 0), ((.files // []) | length)] | @tsv, ((.files // [])[] | .filename)' 2>/dev/null || true)"
+  --jq '(.files // []) as $f | ["H", (.status // "unknown"), (.total_commits // 0), ($f | length)] | @tsv, ($f[] | .filename)' 2>/dev/null || true)"
 if [ -z "$CMP" ]; then
   decide true "conservative: compare ${LAST_SHA:0:7}...${HEAD_SHA:0:7} unavailable (non-linear history?)"
 fi

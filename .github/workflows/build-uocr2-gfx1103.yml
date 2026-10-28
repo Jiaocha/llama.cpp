@@ -1,0 +1,267 @@
+name: Build Unlimited-OCR-2 GGUF (llama.cpp + TheRock 780M gfx1103)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 'Target llama.cpp repository'
+        type: string
+        required: false
+        default: 'ggml-org/llama.cpp'
+      upstream_ref:
+        description: 'Branch, tag, or commit to build (verified on b11913)'
+        type: string
+        required: false
+        default: 'b11913'
+      therock_version:
+        description: 'Pin TheRock tarball version, e.g. 10.3.0a20261027 (empty = auto detect)'
+        type: string
+        required: false
+        default: ''
+      create_release:
+        description: 'Publish as GitHub Release (uocr2-gfx1103 tag)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: uocr2-gfx1103-build
+  cancel-in-progress: false
+
+jobs:
+  build-uocr2-windows-780m:
+    name: Build Unlimited-OCR-2 HIP/gfx1103 package
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_REPO: ${{ github.event.inputs.upstream_repo || 'ggml-org/llama.cpp' }}
+      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || 'b11913' }}
+      PRESET_THEROCK: ${{ github.event.inputs.therock_version }}
+      RELEASE_TAG: 'uocr2-gfx1103'
+    steps:
+      # 1. 拉取基线版本 llama.cpp 源码 (固定在 b11913)
+      - name: Checkout base llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          submodules: recursive
+          fetch-depth: 1
+
+      # 2. 拉取并应用 Unlimited-OCR-2 架构补丁
+      - name: Apply Unlimited-OCR-2 Patches
+        shell: pwsh
+        run: |
+          Write-Host "Downloading Unlimited-OCR-2 patches..."
+          curl.exe -L --retry 5 --retry-delay 3 -o unlimited-ocr2.patch https://huggingface.co/p4ulbr4dl3y/unlimited-ocr-2-ru-gguf/raw/main/llama.cpp-patch/unlimited-ocr2.patch
+          curl.exe -L --retry 5 --retry-delay 3 -o no-repeat-ngram.patch https://huggingface.co/p4ulbr4dl3y/unlimited-ocr-2-ru-gguf/raw/main/llama.cpp-patch/no-repeat-ngram.patch
+          
+          Write-Host "Applying unlimited-ocr2.patch..."
+          git apply --whitespace=fix unlimited-ocr2.patch
+          if ($LASTEXITCODE -ne 0) { throw "Failed to apply unlimited-ocr2.patch" }
+          
+          Write-Host "Applying no-repeat-ngram.patch..."
+          git apply --whitespace=fix no-repeat-ngram.patch
+          if ($LASTEXITCODE -ne 0) { throw "Failed to apply no-repeat-ngram.patch" }
+          
+          Write-Host "Patches applied successfully."
+
+      - name: Record Build Metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $commit = git rev-parse --short HEAD
+          $commitFull = git rev-parse HEAD
+          $dateStr = Get-Date -Format "yyyy-MM-dd"
+          "LLAMA_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LLAMA_COMMIT_FULL=$commitFull" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BUILD_DATE=$dateStr" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Building Unlimited-OCR-2 llama.cpp commit: $commit on $dateStr"
+
+      # 3. 配置 MSVC 编译环境与 Ninja
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Ninja
+        uses: ashutoshvarma/setup-ninja@master
+        with:
+          version: 1.11.1
+
+      # 4. 下载 AMD 官方 TheRock 780M (gfx1103) SDK
+      - name: Dynamic Detect & Download TheRock SDK
+        id: therock
+        shell: pwsh
+        run: |
+          Write-Host "Querying AMD official repository for TheRock Windows gfx110X tarball..."
+          $tarUrl = ""
+          $tarName = ""
+          
+          try {
+            $resp = Invoke-WebRequest -Uri "https://nightly.repo.amd.com/rocm/core/tarball/" -UseBasicParsing -TimeoutSec 30
+            if ($resp.Content -match 'const files = (\[.*?\]);') {
+              $files = $Matches[1] | ConvertFrom-Json
+              $matched = $files | Where-Object { 
+                $_.name -match '^therock-dist-windows-gfx110X-all-10\..*\.tar\.gz$' -and $_.name -notmatch 'tests' 
+              } | Sort-Object mtime -Descending | Select-Object -First 1
+              
+              if ($matched) {
+                $tarName = $matched.name
+                $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
+                Write-Host "Found AMD TheRock package: $tarName"
+              }
+            }
+          } catch {
+            Write-Host "[warn] Failed to dynamically parse repository index: $_"
+          }
+          
+          if (-not $tarUrl) {
+            $tarName = "therock-dist-windows-gfx110X-all-10.2.0a20260927.tar.gz"
+            $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
+          }
+          
+          $sdkVer = $tarName -replace '^therock-dist-windows-gfx110X-all-', '' -replace '\.tar\.gz$', ''
+          if ($env:PRESET_THEROCK) {
+            $tarName = "therock-dist-windows-gfx110X-all-$env:PRESET_THEROCK.tar.gz"
+            $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
+            $sdkVer = $env:PRESET_THEROCK
+          }
+          "THEROCK_VER=$sdkVer" | Out-File -FilePath $env:GITHUB_ENV -Append
+          
+          New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
+          Write-Host "Downloading TheRock SDK from $tarUrl ..."
+          curl.exe -L --retry 5 --retry-delay 3 -o C:\therock.tar.gz $tarUrl
+          
+          Write-Host "Extracting TheRock SDK to C:\TheRock ..."
+          tar -xzf C:\therock.tar.gz -C C:\TheRock
+          
+          if (-not (Test-Path "C:\TheRock\bin\amdhip64_7.dll")) {
+            throw "Invalid TheRock installation: amdhip64_7.dll not found."
+          }
+          Write-Host "TheRock SDK Ready: $sdkVer"
+
+      # 5. 配置 CMake 并针对 Radeon 780M (gfx1103) 构建
+      - name: Configure and Build
+        shell: pwsh
+        run: |
+          $env:HIP_PATH = "C:/TheRock"
+          $env:HIP_PLATFORM = "amd"
+          $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
+          
+          Write-Host "Configuring CMake for gfx1103..."
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_HIP=ON `
+            -DAMDGPU_TARGETS=gfx1103 `
+            -DGGML_NATIVE=OFF `
+            -DLLAMA_CURL=ON
+          
+          Write-Host "Compiling llama.cpp with Unlimited-OCR-2 support..."
+          cmake --build build --config Release -j 4
+
+      # 6. 组装绿色便携包
+      - name: Assemble Portable Package
+        id: pack
+        shell: pwsh
+        run: |
+          $packDir = "dist/llama-uocr2-gfx1103-hip-portable"
+          $binDir = "$packDir/bin"
+          $kpackDir = "$packDir/.kpack"
+          
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $kpackDir | Out-Null
+          
+          Get-ChildItem "build/bin" -Filter "*.exe" | Where-Object { $_.Name -notmatch '^test-' } | ForEach-Object {
+            Copy-Item $_.FullName $binDir/ -Force
+          }
+          Copy-Item build/bin/*.dll $binDir/ -Force
+          
+          $runtimeDlls = @(
+            "amdhip64_7.dll",
+            "amd_comgr.dll",
+            "hipblas.dll",
+            "rocblas.dll",
+            "rocsolver.dll",
+            "hipsolver.dll",
+            "libhipblaslt.dll",
+            "libtensilelite-host.dll",
+            "origami.dll",
+            "rocm-openblas.dll",
+            "rocm-openblas64.dll",
+            "rocm_kpack.dll"
+          )
+          foreach ($dll in $runtimeDlls) {
+            if (Test-Path "C:\TheRock\bin\$dll") {
+              Copy-Item "C:\TheRock\bin\$dll" $binDir/ -Force
+            }
+          }
+          Get-ChildItem "C:\TheRock\bin" -Filter "hiprtc*.dll" | ForEach-Object {
+            Copy-Item $_.FullName $binDir/ -Force
+          }
+          
+          if (Test-Path "C:\TheRock\bin\rocblas") {
+            Copy-Item -Recurse -Force "C:\TheRock\bin\rocblas" "$binDir/rocblas"
+          }
+          
+          if (Test-Path "C:\TheRock\.kpack\blas_lib_gfx1103.kpack") {
+            Copy-Item "C:\TheRock\.kpack\blas_lib_gfx1103.kpack" $kpackDir/ -Force
+          } else {
+            Get-ChildItem "C:\TheRock" -Recurse -Filter "blas_lib_gfx1103.kpack" | Select-Object -First 1 | ForEach-Object {
+              Copy-Item $_.FullName $kpackDir/ -Force
+            }
+          }
+          
+          Set-Content -Path "$packDir/llama-cli.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-cli.exe`" %*" -Encoding ASCII
+          Set-Content -Path "$packDir/llama-server.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-server.exe`" %*" -Encoding ASCII
+          Set-Content -Path "$packDir/start-uocr2-server.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`nset `"LLAMA_MEDIA_MARKER=<image>`"`r`n`"%~dp0bin\llama-server.exe`" -m `"D:\AI\models\Unlimited-OCR-2-GGUF\uocr2-Q4_K_M.gguf`" --mmproj `"D:\AI\models\Unlimited-OCR-2-GGUF\mmproj-uocr2-f16.gguf`" -ngl 99 -c 32768 -b 4096 -ub 2048 -np 1 --temp 0 --no-repeat-ngram-size 24 --no-repeat-ngram-window 1024 --port 8089 %*" -Encoding ASCII
+
+          $readmeLines = @(
+            "# llama.cpp HIP Portable - Unlimited-OCR-2 (Radeon 780M gfx1103)",
+            "==============================================================",
+            "- llama.cpp Commit: $($env:LLAMA_COMMIT_FULL) (b11913 patched)",
+            "- TheRock ROCm 运行时: $($env:THEROCK_VER)",
+            "- 补丁: 已集成 Unlimited-OCR-2 与 no-repeat-ngram 架构支持补丁。",
+            "- 适配硬件: AMD Radeon 780M (gfx1103 / Ryzen 8845HS / 7840HS / 8700G)",
+            "- 特性: 内嵌完整 .kpack 算子包与 HIP 运行时，解压即用，无需安装 ROCm。"
+          )
+          Set-Content -Path "$packDir/README.md" -Value ($readmeLines -join "`r`n") -Encoding UTF8
+          
+          $zipName = "llama-uocr2-$($env:BUILD_DATE)-win-hip-gfx1103.zip"
+          Compress-Archive -Path "$packDir/*" -DestinationPath "dist/$zipName" -Force
+          $sha256 = (Get-FileHash -Path "dist/$zipName" -Algorithm SHA256).Hash.ToLower()
+          "$sha256  $zipName" | Set-Content -Path "dist/$zipName.sha256" -Encoding ASCII
+          
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP_SHA256=$sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # 7. 上传 Artifact (保留 14 天)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: |
+            dist/${{ env.ZIP_NAME }}
+            dist/${{ env.ZIP_NAME }}.sha256
+          retention-days: 14
+
+      # 8. 发布独立 Release (uocr2-gfx1103)
+      - name: Publish or Update Release
+        if: ${{ github.event.inputs.create_release != 'false' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "llama.cpp Unlimited-OCR-2 Edition (Radeon 780M gfx1103)"
+          body: |
+            ## 🚀 llama.cpp Windows 11 Build for Unlimited-OCR-2 (AMD Radeon 780M gfx1103)
+            
+            - **基线版本**: `b11913` ([`${{ env.LLAMA_COMMIT }}`](https://github.com/ggml-org/llama.cpp/commit/${{ env.LLAMA_COMMIT_FULL }}))
+            - **集成特性**: Unlimited-OCR-2 DASH 注意力架构 + `no-repeat-ngram` 采样器
+            - **ROCm SDK**: `${{ env.THEROCK_VER }}`
+            - **文件 SHA256**: `${{ env.ZIP_SHA256 }}`
+          files: |
+            dist/${{ env.ZIP_NAME }}
+            dist/${{ env.ZIP_NAME }}.sha256

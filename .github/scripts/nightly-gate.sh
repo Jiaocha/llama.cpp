@@ -24,7 +24,7 @@
 set -uo pipefail
 
 UPSTREAM_REPO="${UPSTREAM_REPO:-ggml-org/llama.cpp}"
-UPSTREAM_REF="${UPSTREAM_REF:-b11913}"
+UPSTREAM_REF="${UPSTREAM_REF:-master}"
 RELEASE_TAG="${RELEASE_TAG:-nightly-gfx1103}"
 EVENT_NAME="${EVENT_NAME:-schedule}"
 FORCE_REBUILD="${FORCE_REBUILD:-false}"

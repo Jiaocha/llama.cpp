@@ -15,12 +15,7 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
         description: 'Branch, tag, or commit to build'
         type: string
         required: false
-        default: 'b11913'
-      apply_uocr2_patch:
-        description: 'Apply Unlimited-OCR-2 & no-repeat-ngram patches'
-        type: boolean
-        required: false
-        default: true
+        default: 'master'
       therock_version:
         description: 'Pin TheRock tarball version, e.g. 10.2.0a20261008 (empty = auto detect)'
         type: string
@@ -64,7 +59,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       UPSTREAM_REPO: ${{ github.event.inputs.upstream_repo || vars.UPSTREAM_REPO || 'ggml-org/llama.cpp' }}
-      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || vars.UPSTREAM_REF || 'b11913' }}
+      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || vars.UPSTREAM_REF || 'master' }}
       RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
       PIN_THEROCK: ${{ github.event.inputs.therock_version || vars.THEROCK_VERSION }}
       MIN_INTERVAL_HOURS: ${{ vars.MIN_INTERVAL_HOURS || '0' }}
@@ -107,7 +102,7 @@ jobs:
       RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
       KEEP_ASSETS: ${{ vars.KEEP_NIGHTLY_ASSETS || '7' }}
     steps:
-      # 1. 动态拉取指定版本的 llama.cpp 源码
+      # 1. 动态拉取当天最新的 llama.cpp 源码 (默认直接拉取官方 ggml-org/llama.cpp:master)
       - name: Checkout latest llama.cpp
         uses: actions/checkout@v4
         with:
@@ -115,25 +110,6 @@ jobs:
           ref: ${{ env.UPSTREAM_REF }}
           submodules: recursive
           fetch-depth: 1
-
-      # 1.5 检出并应用 Unlimited-OCR-2 及 no-repeat-ngram 架构支持补丁
-      - name: Apply Unlimited-OCR-2 Patches
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.apply_uocr2_patch != 'false' }}
-        shell: pwsh
-        run: |
-          Write-Host "Downloading Unlimited-OCR-2 and Ngram patches..."
-          curl.exe -L --retry 5 --retry-delay 3 -o unlimited-ocr2.patch https://huggingface.co/p4ulbr4dl3y/unlimited-ocr-2-ru-gguf/raw/main/llama.cpp-patch/unlimited-ocr2.patch
-          curl.exe -L --retry 5 --retry-delay 3 -o no-repeat-ngram.patch https://huggingface.co/p4ulbr4dl3y/unlimited-ocr-2-ru-gguf/raw/main/llama.cpp-patch/no-repeat-ngram.patch
-          
-          Write-Host "Applying unlimited-ocr2.patch..."
-          git apply --whitespace=fix unlimited-ocr2.patch
-          if ($LASTEXITCODE -ne 0) { throw "Failed to apply unlimited-ocr2.patch" }
-          
-          Write-Host "Applying no-repeat-ngram.patch..."
-          git apply --whitespace=fix no-repeat-ngram.patch
-          if ($LASTEXITCODE -ne 0) { throw "Failed to apply no-repeat-ngram.patch" }
-          
-          Write-Host "Patches applied successfully."
 
       - name: Record Build Metadata
         id: meta
@@ -307,12 +283,10 @@ jobs:
             "- TheRock ROCm 运行时: $($env:THEROCK_VER)",
             "- 适配硬件: AMD Radeon 780M (gfx1103 / Ryzen 8845HS / 7840HS / 8700G)",
             "- 特性: 内嵌完整 .kpack 算子包与 HIP 运行时，解压即用，无需安装 ROCm。",
-            "- 补丁: 已集成 Unlimited-OCR-2 与 no-repeat-ngram 架构支持补丁。",
             "",
             "## 常用命令",
             "- 命令行对话: llama-cli.bat -m 模型.gguf -ngl 99 -fa on",
-            "- WebUI/API 服务: llama-server.bat -m 模型.gguf -ngl 99 -fa on --port 8080",
-            "- Unlimited-OCR-2 服务: llama-server.bat -m uocr2-Q4_K_M.gguf --mmproj mmproj-uocr2-f16.gguf -ngl 99 -c 4096 --no-repeat-ngram-size 24 --no-repeat-ngram-window 1024 --port 8080"
+            "- WebUI/API 服务: llama-server.bat -m 模型.gguf -ngl 99 -fa on --port 8080"
           )
           Set-Content -Path "$packDir/README.md" -Value ($readmeLines -join "`r`n") -Encoding UTF8
           
@@ -351,7 +325,6 @@ jobs:
             - **构建日期**: `${{ env.BUILD_DATE }}` (每日凌晨 06:00 自动构建)
             - **llama.cpp Commit**: [`${{ env.LLAMA_COMMIT }}`](https://github.com/ggml-org/llama.cpp/commit/${{ env.LLAMA_COMMIT_FULL }})
             - **TheRock ROCm SDK**: `${{ env.THEROCK_VER }}`
-            - **补丁集成**: `Unlimited-OCR-2` 架构支持 + `no-repeat-ngram` 循环抑制补丁
             - **硬件架构**: AMD Radeon 780M (`gfx1103` / Ryzen 8845HS / 7840HS / 8700G)
             - **文件 SHA256**: `${{ env.ZIP_SHA256 }}`
             

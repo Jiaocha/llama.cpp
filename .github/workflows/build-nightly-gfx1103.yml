@@ -21,6 +21,16 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
         type: string
         required: false
         default: ''
+      build_windows:
+        description: 'Build Windows package'
+        type: boolean
+        required: false
+        default: true
+      build_linux:
+        description: 'Build Linux / WSL2 package'
+        type: boolean
+        required: false
+        default: true
       create_release:
         description: 'Publish as GitHub Release (nightly-gfx1103 tag)'
         type: boolean
@@ -86,7 +96,7 @@ jobs:
   build-windows-780m-gfx1103:
     name: Build Windows package (gfx1103)
     needs: check-update
-    if: ${{ !cancelled() && needs.check-update.outputs.should_build == 'true' && github.event.inputs.gate_check_only != 'true' }}
+    if: ${{ !cancelled() && (needs.check-update.outputs.should_build == 'true' || github.event.inputs.force_rebuild == 'true') && github.event.inputs.gate_check_only != 'true' && github.event.inputs.build_windows != 'false' }}
     runs-on: windows-2022
     timeout-minutes: 45
     env:
@@ -256,7 +266,7 @@ jobs:
   build-linux-wsl-780m-gfx1103:
     name: Build Linux/WSL2 package (gfx1103)
     needs: check-update
-    if: ${{ !cancelled() && needs.check-update.outputs.should_build == 'true' && github.event.inputs.gate_check_only != 'true' }}
+    if: ${{ !cancelled() && (needs.check-update.outputs.should_build == 'true' || github.event.inputs.force_rebuild == 'true') && github.event.inputs.gate_check_only != 'true' && github.event.inputs.build_windows != 'false' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     env:
@@ -352,34 +362,34 @@ jobs:
           
           # 写入 WSL2/Linux 便捷运行脚本 (自动注入 HSA_OVERRIDE_GFX_VERSION=11.0.3)
           cat << 'EOF' > "$PACK_DIR/run-cli.sh"
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
-export HSA_OVERRIDE_GFX_VERSION=11.0.3
-exec "$SCRIPT_DIR/bin/llama-cli" "$@"
-EOF
+          #!/usr/bin/env bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+          export HSA_OVERRIDE_GFX_VERSION=11.0.3
+          exec "$SCRIPT_DIR/bin/llama-cli" "$@"
+          EOF
           chmod +x "$PACK_DIR/run-cli.sh"
 
           cat << 'EOF' > "$PACK_DIR/run-server.sh"
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
-export HSA_OVERRIDE_GFX_VERSION=11.0.3
-exec "$SCRIPT_DIR/bin/llama-server" "$@"
-EOF
+          #!/usr/bin/env bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+          export HSA_OVERRIDE_GFX_VERSION=11.0.3
+          exec "$SCRIPT_DIR/bin/llama-server" "$@"
+          EOF
           chmod +x "$PACK_DIR/run-server.sh"
 
           cat << EOF > "$PACK_DIR/README.md"
-# llama.cpp Linux / WSL2 HIP Portable (Radeon 780M gfx1103)
-==============================================================
-- 针对 AMD Radeon 780M (gfx1103) 在 Linux 及 Windows WSL2 Ubuntu 环境加速
-- 内嵌核心运行时与算子库，免装大型 ROCm SDK
-- 运行前请确保 WSL2 具备 /dev/kfd 与 /dev/dri 权限
-
-## 常用命令
-- 终端运行: ./run-cli.sh -m 模型.gguf -ngl 99 -fa on
-- 服务运行: ./run-server.sh -m 模型.gguf -ngl 99 -fa on --port 8080
-EOF
+          # llama.cpp Linux / WSL2 HIP Portable (Radeon 780M gfx1103)
+          ==============================================================
+          - 针对 AMD Radeon 780M (gfx1103) 在 Linux 及 Windows WSL2 Ubuntu 环境加速
+          - 内嵌核心运行时与算子库，免装大型 ROCm SDK
+          - 运行前请确保 WSL2 具备 /dev/kfd 与 /dev/dri 权限
+          
+          ## 常用命令
+          - 终端运行: ./run-cli.sh -m 模型.gguf -ngl 99 -fa on
+          - 服务运行: ./run-server.sh -m 模型.gguf -ngl 99 -fa on --port 8080
+          EOF
 
           TAR_NAME="llama-${BUILD_DATE}-b${COMMIT}-linux-wsl-hip-gfx1103.tar.gz"
           tar -czf "dist/${TAR_NAME}" -C "dist" "llama-linux-wsl-gfx1103-hip-portable"
@@ -410,12 +420,14 @@ EOF
         with:
           name: windows-package
           path: release-assets
+        continue-on-error: true
 
       - name: Download Linux Package
         uses: actions/download-artifact@v4
         with:
           name: linux-package
           path: release-assets
+        continue-on-error: true
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2

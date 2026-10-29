@@ -2,7 +2,7 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
 
 'on':
   schedule:
-    # 每天北京时间 06:00 (UTC 22:00) 自动执行（国内外均较空闲的时段）
+    # 每天北京时间 06:00 (UTC 22:00) 自动执行
     - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
@@ -17,7 +17,7 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
         required: false
         default: 'master'
       therock_version:
-        description: 'Pin TheRock tarball version, e.g. 10.2.0a20261008 (empty = auto detect)'
+        description: 'Pin TheRock tarball version, e.g. 10.3.0a20261028 (empty = auto detect)'
         type: string
         required: false
         default: ''
@@ -32,7 +32,7 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
         required: false
         default: false
       gate_check_only:
-        description: 'Run only the update gate on ubuntu (no Windows build minutes)'
+        description: 'Run only the update gate on ubuntu (no build minutes)'
         type: boolean
         required: false
         default: false
@@ -40,16 +40,12 @@ name: Daily Nightly Build (llama.cpp + TheRock 780M gfx1103)
 permissions:
   contents: write
 
-# 定时任务与手动触发不得并发跑两份构建（重复消耗 Windows 分钟）
 concurrency:
   group: nightly-gfx1103-build
   cancel-in-progress: false
 
 jobs:
-  # 0. 版本门控：只有上游 llama.cpp 出现影响本包的更新、或 TheRock SDK 基线版本升级时才构建。
-  #    上次构建的 commit / SDK 版本 / 时间戳从 nightly release 正文的 ci-build-state 标记读回。
-  #    阈值可用仓库 Variables 调整：MIN_INTERVAL_HOURS(默认 0) / MAX_STALE_HOURS(默认 168) /
-  #    THEROCK_VERSION / UPSTREAM_REPO / UPSTREAM_REF / NIGHTLY_RELEASE_TAG。
+  # 0. 版本门控：检查上游是否有值得构建的新提交或 TheRock SDK 大版本升级
   check-update:
     name: Check for a new version (gate)
     runs-on: ubuntu-latest
@@ -86,12 +82,12 @@ jobs:
         id: gate
         run: bash .github/scripts/nightly-gate.sh
 
+  # 1. Windows 原生绿色便携包构建 (AMD Radeon 780M gfx1103)
   build-windows-780m-gfx1103:
-    name: Build llama.cpp HIP/gfx1103 package
+    name: Build Windows package (gfx1103)
     needs: check-update
     if: ${{ !cancelled() && needs.check-update.outputs.should_build == 'true' && github.event.inputs.gate_check_only != 'true' }}
     runs-on: windows-2022
-    # Windows runner 按 2x 计费；挂起的构建不能按默认 360 分钟烧分钟数
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,10 +95,14 @@ jobs:
       UPSTREAM_REPO: ${{ needs.check-update.outputs.upstream_repo }}
       UPSTREAM_REF: ${{ needs.check-update.outputs.upstream_ref }}
       PRESET_THEROCK: ${{ needs.check-update.outputs.therock_version }}
-      RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
-      KEEP_ASSETS: ${{ vars.KEEP_NIGHTLY_ASSETS || '7' }}
+    outputs:
+      zip_name: ${{ steps.pack.outputs.zip_name }}
+      commit: ${{ steps.meta.outputs.commit }}
+      commit_full: ${{ steps.meta.outputs.commit_full }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      built_at: ${{ steps.meta.outputs.built_at }}
+      therock_ver: ${{ steps.therock.outputs.sdk_ver }}
     steps:
-      # 1. 动态拉取当天最新的 llama.cpp 源码 (默认直接拉取官方 ggml-org/llama.cpp:master)
       - name: Checkout latest llama.cpp
         uses: actions/checkout@v4
         with:
@@ -120,13 +120,15 @@ jobs:
           $dateStr = Get-Date -Format "yyyy-MM-dd"
           $nowUtc = (Get-Date).ToUniversalTime()
           $builtAt = '{0:0000}-{1:00}-{2:00}T{3:00}:{4:00}:{5:00}Z' -f $nowUtc.Year, $nowUtc.Month, $nowUtc.Day, $nowUtc.Hour, $nowUtc.Minute, $nowUtc.Second
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "commit_full=$commitFull" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "build_date=$dateStr" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "built_at=$builtAt" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "LLAMA_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append
           "LLAMA_COMMIT_FULL=$commitFull" | Out-File -FilePath $env:GITHUB_ENV -Append
           "BUILD_DATE=$dateStr" | Out-File -FilePath $env:GITHUB_ENV -Append
           "BUILT_AT_UTC=$builtAt" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Building llama.cpp commit: $commit on $dateStr"
 
-      # 2. 配置 MSVC 编译环境与 Ninja
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
@@ -135,148 +137,96 @@ jobs:
         with:
           version: 1.11.1
 
-      # 3. 动态探测并下载 AMD 官方当天最新的 TheRock 780M (gfx1103) SDK
       - name: Dynamic Detect & Download Latest TheRock SDK
         id: therock
         shell: pwsh
         run: |
-          Write-Host "Querying AMD official repository for the latest TheRock Windows gfx110X tarball..."
           $tarUrl = ""
           $tarName = ""
-          
           try {
             $resp = Invoke-WebRequest -Uri "https://nightly.repo.amd.com/rocm/core/tarball/" -UseBasicParsing -TimeoutSec 30
             if ($resp.Content -match 'const files = (\[.*?\]);') {
               $files = $Matches[1] | ConvertFrom-Json
-              # 匹配适用于 Windows gfx110X (包含 gfx1103 / Radeon 780M) 的最新 10.x 每日发行包
               $matched = $files | Where-Object { 
                 $_.name -match '^therock-dist-windows-gfx110X-all-10\..*\.tar\.gz$' -and $_.name -notmatch 'tests' 
               } | Sort-Object mtime -Descending | Select-Object -First 1
-              
               if ($matched) {
                 $tarName = $matched.name
                 $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
-                Write-Host "Found latest AMD TheRock Nightly: $tarName (mtime: $($matched.mtime))"
               }
             }
-          } catch {
-            Write-Host "[warn] Failed to dynamically parse repository index: $_"
-          }
+          } catch {}
           
-          # 容错降级：若动态探测因网络波动失败，自动使用已验证的高可用版本
           if (-not $tarUrl) {
-            $tarName = "therock-dist-windows-gfx110X-all-10.2.0a20260927.tar.gz"
+            $tarName = "therock-dist-windows-gfx110X-all-10.3.0a20261028.tar.gz"
             $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
-            Write-Host "[info] Falling back to baseline TheRock SDK: $tarName"
           }
-          
           $sdkVer = $tarName -replace '^therock-dist-windows-gfx110X-all-', '' -replace '\.tar\.gz$', ''
-          # 门控 job 已确定过 SDK 版本：优先使用它，保证构建用的 SDK 与门控判断一致
           if ($env:PRESET_THEROCK) {
             $tarName = "therock-dist-windows-gfx110X-all-$env:PRESET_THEROCK.tar.gz"
             $tarUrl = "https://nightly.repo.amd.com/rocm/core/tarball/$tarName"
             $sdkVer = $env:PRESET_THEROCK
-            Write-Host "[info] Using TheRock version pinned by the update gate: $tarName"
           }
+          "sdk_ver=$sdkVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "THEROCK_VER=$sdkVer" | Out-File -FilePath $env:GITHUB_ENV -Append
           
           New-Item -ItemType Directory -Force -Path C:\TheRock | Out-Null
-          Write-Host "Downloading TheRock SDK from $tarUrl ..."
           curl.exe -L --retry 5 --retry-delay 3 -o C:\therock.tar.gz $tarUrl
-          
-          Write-Host "Extracting TheRock SDK to C:\TheRock ..."
           tar -xzf C:\therock.tar.gz -C C:\TheRock
-          
-          # 验证核心组件
-          if (-not (Test-Path "C:\TheRock\bin\amdhip64_7.dll")) {
-            throw "Invalid TheRock installation: amdhip64_7.dll not found."
-          }
-          Write-Host "TheRock SDK Ready: $sdkVer"
 
-      # 4. 配置 CMake 并针对 Radeon 780M (gfx1103) 构建
       - name: Configure and Build
         shell: pwsh
         run: |
           $env:HIP_PATH = "C:/TheRock"
           $env:HIP_PLATFORM = "amd"
           $env:Path = "C:\TheRock\bin;C:\TheRock\lib\llvm\bin;$env:Path"
-          
-          Write-Host "Configuring CMake for gfx1103..."
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DGGML_HIP=ON `
             -DAMDGPU_TARGETS=gfx1103 `
             -DGGML_NATIVE=OFF `
             -DLLAMA_CURL=ON
-          
-          Write-Host "Compiling llama.cpp..."
           cmake --build build --config Release -j 4
 
-      # 5. 按照 TheRock 10.2 标准组装绿色便携包 (.kpack 架构)
-      - name: Assemble Portable Package
+      - name: Assemble Windows Portable Package
         id: pack
         shell: pwsh
         run: |
           $packDir = "dist/llama-gfx1103-hip-portable"
           $binDir = "$packDir/bin"
           $kpackDir = "$packDir/.kpack"
-          
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           New-Item -ItemType Directory -Force -Path $kpackDir | Out-Null
           
-          # 复制编译生成的 llama 二进制与动态库 (排除开发单元测试程序)
           Get-ChildItem "build/bin" -Filter "*.exe" | Where-Object { $_.Name -notmatch '^test-' } | ForEach-Object {
             Copy-Item $_.FullName $binDir/ -Force
           }
           Copy-Item build/bin/*.dll $binDir/ -Force
           
-          # 复制 TheRock 核心运行时 DLL (精准白名单，剔除与大模型无关的 MIOpen/rocfft/rocsparse 等 ~1.5GB 卷积/信号处理库)
           $runtimeDlls = @(
-            "amdhip64_7.dll",
-            "amd_comgr.dll",
-            "hipblas.dll",
-            "rocblas.dll",
-            "rocsolver.dll",
-            "hipsolver.dll",
-            "libhipblaslt.dll",
-            "libtensilelite-host.dll",
-            "origami.dll",
-            "rocm-openblas.dll",
-            "rocm-openblas64.dll",
-            "rocm_kpack.dll"
+            "amdhip64_7.dll", "amd_comgr.dll", "hipblas.dll", "rocblas.dll", "rocsolver.dll",
+            "hipsolver.dll", "libhipblaslt.dll", "libtensilelite-host.dll", "origami.dll",
+            "rocm-openblas.dll", "rocm-openblas64.dll", "rocm_kpack.dll"
           )
           foreach ($dll in $runtimeDlls) {
-            if (Test-Path "C:\TheRock\bin\$dll") {
-              Copy-Item "C:\TheRock\bin\$dll" $binDir/ -Force
-            }
+            if (Test-Path "C:\TheRock\bin\$dll") { Copy-Item "C:\TheRock\bin\$dll" $binDir/ -Force }
           }
-          Get-ChildItem "C:\TheRock\bin" -Filter "hiprtc*.dll" | ForEach-Object {
-            Copy-Item $_.FullName $binDir/ -Force
-          }
-          
-          # 复制 rocblas 离线内核子目录 (包含 TensileLibrary_*.dat 等 150 个 gfx1103 算子，仅约 16MB)
-          if (Test-Path "C:\TheRock\bin\rocblas") {
-            Copy-Item -Recurse -Force "C:\TheRock\bin\rocblas" "$binDir/rocblas"
-          }
-          
-          # 复制 .kpack 矩阵算子库到 bin/ 的上一级目录 (ROCm 10.2 标准相对寻址路径)
+          Get-ChildItem "C:\TheRock\bin" -Filter "hiprtc*.dll" | ForEach-Object { Copy-Item $_.FullName $binDir/ -Force }
+          if (Test-Path "C:\TheRock\bin\rocblas") { Copy-Item -Recurse -Force "C:\TheRock\bin\rocblas" "$binDir/rocblas" }
           if (Test-Path "C:\TheRock\.kpack\blas_lib_gfx1103.kpack") {
             Copy-Item "C:\TheRock\.kpack\blas_lib_gfx1103.kpack" $kpackDir/ -Force
           } else {
-            Write-Host "[warn] .kpack/blas_lib_gfx1103.kpack not found in root, searching..."
             Get-ChildItem "C:\TheRock" -Recurse -Filter "blas_lib_gfx1103.kpack" | Select-Object -First 1 | ForEach-Object {
               Copy-Item $_.FullName $kpackDir/ -Force
             }
           }
           
-          # 写入便捷启动脚本
           Set-Content -Path "$packDir/llama-cli.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-cli.exe`" %*" -Encoding ASCII
           Set-Content -Path "$packDir/llama-server.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-server.exe`" %*" -Encoding ASCII
           Set-Content -Path "$packDir/llama-bench.bat" -Value "@echo off`r`nchcp 65001 >nul 2>&1`r`n`"%~dp0bin\llama-bench.exe`" %*" -Encoding ASCII
 
-          # 写入版本自述文件
           $readmeLines = @(
-            "# llama.cpp HIP Portable - Radeon 780M (gfx1103) Nightly",
+            "# llama.cpp HIP Portable - Windows (Radeon 780M gfx1103)",
             "==============================================================",
             "- 构建时间: $($env:BUILD_DATE) (每日凌晨 06:00 自动构建)",
             "- llama.cpp Commit: $($env:LLAMA_COMMIT_FULL)",
@@ -290,77 +240,225 @@ jobs:
           )
           Set-Content -Path "$packDir/README.md" -Value ($readmeLines -join "`r`n") -Encoding UTF8
           
-          # 打包 ZIP 并生成 SHA256 校验码
+          # 打包 ZIP（纯便携包，无需 .sha256 杂项）
           $zipName = "llama-$($env:BUILD_DATE)-b$($env:LLAMA_COMMIT)-win-hip-gfx1103.zip"
           Compress-Archive -Path "$packDir/*" -DestinationPath "dist/$zipName" -Force
-          $sha256 = (Get-FileHash -Path "dist/$zipName" -Algorithm SHA256).Hash.ToLower()
-          "$sha256  $zipName" | Set-Content -Path "dist/$zipName.sha256" -Encoding ASCII
-          
-          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "ZIP_SHA256=$sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Created archive: dist/$zipName"
-          Write-Host "SHA256: $sha256"
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # 6. 上传 Artifact (保留 14 天)
-      - name: Upload Artifact
+      - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: |
-            dist/${{ env.ZIP_NAME }}
-            dist/${{ env.ZIP_NAME }}.sha256
+          name: windows-package
+          path: dist/*.zip
           retention-days: 14
 
-      # 7. 发布/更新 GitHub Nightly Release 并记录版本信息
-      - name: Publish or Update Nightly Release
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release != 'false' }}
+  # 2. Linux / WSL2 便携包构建 (AMD Radeon 780M gfx1103)
+  build-linux-wsl-780m-gfx1103:
+    name: Build Linux/WSL2 package (gfx1103)
+    needs: check-update
+    if: ${{ !cancelled() && needs.check-update.outputs.should_build == 'true' && github.event.inputs.gate_check_only != 'true' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_REPO: ${{ needs.check-update.outputs.upstream_repo }}
+      UPSTREAM_REF: ${{ needs.check-update.outputs.upstream_ref }}
+      PRESET_THEROCK: ${{ needs.check-update.outputs.therock_version }}
+    outputs:
+      tar_name: ${{ steps.pack.outputs.tar_name }}
+    steps:
+      - name: Install Build Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build curl libcurl4-openssl-dev
+
+      - name: Checkout latest llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Dynamic Detect & Download Latest TheRock Linux SDK
+        id: therock
+        run: |
+          TAR_NAME=""
+          TAR_URL=""
+          TAR_LIST=$(curl -sS --max-time 30 "https://nightly.repo.amd.com/rocm/core/tarball/" | grep -oE 'therock-dist-linux-gfx110X-all-[0-9][^"]*\.tar\.gz' | grep -v 'tests' | sort -uV)
+          TAR_NAME=$(echo "$TAR_LIST" | tail -1)
+          if [ -n "$TAR_NAME" ]; then
+            TAR_URL="https://nightly.repo.amd.com/rocm/core/tarball/$TAR_NAME"
+          else
+            TAR_NAME="therock-dist-linux-gfx110X-all-10.3.0a20261028.tar.gz"
+            TAR_URL="https://nightly.repo.amd.com/rocm/core/tarball/$TAR_NAME"
+          fi
+          
+          if [ -n "$PRESET_THEROCK" ]; then
+            TAR_NAME="therock-dist-linux-gfx110X-all-${PRESET_THEROCK}.tar.gz"
+            TAR_URL="https://nightly.repo.amd.com/rocm/core/tarball/$TAR_NAME"
+          fi
+          
+          echo "Downloading TheRock Linux SDK: $TAR_URL ..."
+          mkdir -p /opt/TheRock
+          curl -sSL --retry 5 --retry-delay 3 "$TAR_URL" -o /tmp/therock.tar.gz
+          tar -xzf /tmp/therock.tar.gz -C /opt/TheRock
+          echo "TheRock Linux ready."
+
+      - name: Configure and Build (Linux/HIP)
+        run: |
+          export ROCM_PATH="/opt/TheRock"
+          export HIP_PATH="/opt/TheRock"
+          export PATH="/opt/TheRock/bin:/opt/TheRock/llvm/bin:$PATH"
+          export LD_LIBRARY_PATH="/opt/TheRock/lib:$LD_LIBRARY_PATH"
+          
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_HIP=ON \
+            -DAMDGPU_TARGETS=gfx1103 \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_CURL=ON
+            
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Assemble Linux Portable Package
+        id: pack
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          PACK_DIR="dist/llama-linux-wsl-gfx1103-hip-portable"
+          BIN_DIR="$PACK_DIR/bin"
+          LIB_DIR="$PACK_DIR/lib"
+          KPACK_DIR="$PACK_DIR/.kpack"
+          mkdir -p "$BIN_DIR" "$LIB_DIR" "$KPACK_DIR"
+          
+          # 复制编译生成的二进制
+          find build/bin -maxdepth 1 -type f -executable ! -name 'test-*' -exec cp {} "$BIN_DIR/" \;
+          find build/bin -name '*.so*' -exec cp {} "$LIB_DIR/" \; 2>/dev/null || true
+          
+          # 复制 TheRock Linux 核心动态库
+          find /opt/TheRock/lib -name 'libamdhip64*.so*' -exec cp -d {} "$LIB_DIR/" \; 2>/dev/null || true
+          find /opt/TheRock/lib -name 'libhipblas*.so*' -exec cp -d {} "$LIB_DIR/" \; 2>/dev/null || true
+          find /opt/TheRock/lib -name 'librocblas*.so*' -exec cp -d {} "$LIB_DIR/" \; 2>/dev/null || true
+          find /opt/TheRock/lib -name 'libamd_comgr*.so*' -exec cp -d {} "$LIB_DIR/" \; 2>/dev/null || true
+          find /opt/TheRock/lib -name 'libhsa-runtime*.so*' -exec cp -d {} "$LIB_DIR/" \; 2>/dev/null || true
+          
+          # 复制算子与 .kpack
+          if [ -d /opt/TheRock/lib/rocblas ]; then
+            cp -r /opt/TheRock/lib/rocblas "$LIB_DIR/"
+          fi
+          find /opt/TheRock -name '*gfx1103*.kpack' -exec cp {} "$KPACK_DIR/" \; 2>/dev/null || true
+          
+          # 写入 WSL2/Linux 便捷运行脚本 (自动注入 HSA_OVERRIDE_GFX_VERSION=11.0.3)
+          cat << 'EOF' > "$PACK_DIR/run-cli.sh"
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export HSA_OVERRIDE_GFX_VERSION=11.0.3
+exec "$SCRIPT_DIR/bin/llama-cli" "$@"
+EOF
+          chmod +x "$PACK_DIR/run-cli.sh"
+
+          cat << 'EOF' > "$PACK_DIR/run-server.sh"
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$SCRIPT_DIR/lib:$LD_LIBRARY_PATH"
+export HSA_OVERRIDE_GFX_VERSION=11.0.3
+exec "$SCRIPT_DIR/bin/llama-server" "$@"
+EOF
+          chmod +x "$PACK_DIR/run-server.sh"
+
+          cat << EOF > "$PACK_DIR/README.md"
+# llama.cpp Linux / WSL2 HIP Portable (Radeon 780M gfx1103)
+==============================================================
+- 针对 AMD Radeon 780M (gfx1103) 在 Linux 及 Windows WSL2 Ubuntu 环境加速
+- 内嵌核心运行时与算子库，免装大型 ROCm SDK
+- 运行前请确保 WSL2 具备 /dev/kfd 与 /dev/dri 权限
+
+## 常用命令
+- 终端运行: ./run-cli.sh -m 模型.gguf -ngl 99 -fa on
+- 服务运行: ./run-server.sh -m 模型.gguf -ngl 99 -fa on --port 8080
+EOF
+
+          TAR_NAME="llama-${BUILD_DATE}-b${COMMIT}-linux-wsl-hip-gfx1103.tar.gz"
+          tar -czf "dist/${TAR_NAME}" -C "dist" "llama-linux-wsl-gfx1103-hip-portable"
+          echo "tar_name=$TAR_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: dist/*.tar.gz
+          retention-days: 14
+
+  # 3. 聚合发布 GitHub Nightly Release (无 .sha256 杂项)
+  publish-release:
+    name: Publish Nightly Release
+    needs: [check-update, build-windows-780m-gfx1103, build-linux-wsl-780m-gfx1103]
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release != 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ vars.NIGHTLY_RELEASE_TAG || 'nightly-gfx1103' }}
+      KEEP_ASSETS: ${{ vars.KEEP_NIGHTLY_ASSETS || '7' }}
+    steps:
+      - name: Download Windows Package
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-package
+          path: release-assets
+
+      - name: Download Linux Package
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-package
+          path: release-assets
+
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: "llama.cpp Nightly (Radeon 780M gfx1103) - ${{ env.BUILD_DATE }}"
+          name: "llama.cpp Nightly (Radeon 780M gfx1103) - ${{ needs.build-windows-780m-gfx1103.outputs.build_date }}"
           body: |
-            ## 🚀 llama.cpp Windows 11 Nightly Build for AMD Radeon 780M (gfx1103)
+            ## 🚀 llama.cpp Nightly Build for AMD Radeon 780M (gfx1103)
             
             ### 📋 构建版本元数据记录 (Build Metadata)
-            - **构建日期**: `${{ env.BUILD_DATE }}` (每日凌晨 06:00 自动构建)
-            - **llama.cpp Commit**: [`${{ env.LLAMA_COMMIT }}`](https://github.com/ggml-org/llama.cpp/commit/${{ env.LLAMA_COMMIT_FULL }})
-            - **TheRock ROCm SDK**: `${{ env.THEROCK_VER }}`
-            - **硬件架构**: AMD Radeon 780M (`gfx1103` / Ryzen 8845HS / 7840HS / 8700G)
-            - **文件 SHA256**: `${{ env.ZIP_SHA256 }}`
+            - **构建日期**: `${{ needs.build-windows-780m-gfx1103.outputs.build_date }}` (每日凌晨 06:00 自动构建)
+            - **llama.cpp Commit**: [`${{ needs.build-windows-780m-gfx1103.outputs.commit }}`](https://github.com/ggml-org/llama.cpp/commit/${{ needs.build-windows-780m-gfx1103.outputs.commit_full }})
+            - **TheRock ROCm SDK**: `${{ needs.build-windows-780m-gfx1103.outputs.therock_ver }}`
+            - **适配架构**: AMD Radeon 780M (`gfx1103` / Ryzen 8845HS / 7840HS / 8700G)
             
-            ### 📦 使用说明
-            1. 下载下方的 `${{ env.ZIP_NAME }}` 绿色压缩包；
-            2. 解压到任意目录（**纯绿色便携包，已内嵌 .kpack 内核与运行时，无需配置环境变量，无需安装 ROCm**）；
-            3. 双击 `llama-server.bat -m 模型.gguf -ngl 99 -fa on` 启动 API/WebUI 服务，或使用 `llama-cli.bat` 终端对话。
+            ### 📦 便携压缩包 (解压即用，无 .sha256 杂项)
+            - **Windows 版**: `${{ needs.build-windows-780m-gfx1103.outputs.zip_name }}` (双击 `llama-server.bat` 运行)
+            - **Linux / WSL2 版**: `${{ needs.build-linux-wsl-780m-gfx1103.outputs.tar_name }}` (通过 `./run-server.sh` 运行)
 
-            <!-- ci-build-state: {"sha":"${{ env.LLAMA_COMMIT_FULL }}","therock":"${{ env.THEROCK_VER }}","built_at":"${{ env.BUILT_AT_UTC }}"} -->
+            <!-- ci-build-state: {"sha":"${{ needs.build-windows-780m-gfx1103.outputs.commit_full }}","therock":"${{ needs.build-windows-780m-gfx1103.outputs.therock_ver }}","built_at":"${{ needs.build-windows-780m-gfx1103.outputs.built_at }}"} -->
           files: |
-            dist/${{ env.ZIP_NAME }}
-            dist/${{ env.ZIP_NAME }}.sha256
+            release-assets/*
 
-      # 8. 只保留最近 KEEP_ASSETS 个 ZIP（连同其 .sha256），避免 nightly release 无限膨胀
-      - name: Trim old nightly assets
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release != 'false' }}
-        shell: pwsh
+      - name: Clean up old assets (trim to ${{ env.KEEP_ASSETS }} latest builds)
         run: |
-          $keep = if ($env:KEEP_ASSETS) { [int]$env:KEEP_ASSETS } else { 7 }
-          $relId = (gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json).id
-          $rows = gh api "repos/$env:GITHUB_REPOSITORY/releases/$relId/assets?per_page=100" --paginate `
-            --jq '.[] | [(.id|tostring), .name, .created_at] | @tsv'
-          if (-not $rows) { Write-Host "No assets; nothing to trim."; exit 0 }
-          $assets = $rows | ForEach-Object {
-            $c = $_ -split "`t"
-            [pscustomobject]@{ Id = [int64]$c[0]; Name = $c[1]; Created = $c[2] }
-          }
-          # 以 zip 为基准保留最新 $keep 个（及其配套 .sha256）
-          $stems = $assets | Where-Object { $_.Name -like '*.zip' } |
-            Sort-Object Created -Descending | Select-Object -First $keep -ExpandProperty Name
-          $doomed = $assets | Where-Object {
-            $stem = if ($_.Name -like '*.zip.sha256') { $_.Name -replace '\.sha256$', '' } else { $_.Name }
-            ($_.Name -like '*.zip' -or $_.Name -like '*.zip.sha256') -and ($stems -notcontains $stem)
-          }
-          Write-Host "Keeping $($stems.Count) zips, removing $($doomed.Count) assets"
-          foreach ($a in $doomed) {
-            Write-Host "  deleting: $($a.Name) (id=$($a.Id))"
-            gh api -X DELETE "repos/$env:GITHUB_REPOSITORY/releases/assets/$($a.Id)" | Out-Null
-          }
+          KEEP=${KEEP_ASSETS:-7}
+          REL_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')
+          if [ -z "$REL_ID" ]; then exit 0; fi
+          
+          # 清理历史遗留的所有 .sha256 文件
+          ALL_SHA_ASSETS=$(gh api "repos/$GITHUB_REPOSITORY/releases/$REL_ID/assets?per_page=100" --paginate --jq '.[] | select(.name | endswith(".sha256")) | .id')
+          for aid in $ALL_SHA_ASSETS; do
+            echo "Deleting legacy checksum asset: $aid"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$aid" || true
+          done
+          
+          # 保留最近 KEEP 个 Windows zip 和 Linux tar.gz
+          for EXT in "zip" "tar.gz"; do
+            DOOMED=$(gh api "repos/$GITHUB_REPOSITORY/releases/$REL_ID/assets?per_page=100" --paginate \
+              --jq ".[] | select(.name | endswith(\".$EXT\")) | [.id, .created_at] | @tsv" | \
+              sort -k2 -r | tail -n +$((KEEP + 1)) | cut -f1)
+            for aid in $DOOMED; do
+              echo "Trimming old $EXT asset: $aid"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$aid" || true
+            done
+          done

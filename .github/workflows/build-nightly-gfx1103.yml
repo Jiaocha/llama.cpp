@@ -266,7 +266,7 @@ jobs:
   build-linux-wsl-780m-gfx1103:
     name: Build Linux/WSL2 package (gfx1103)
     needs: check-update
-    if: ${{ !cancelled() && (needs.check-update.outputs.should_build == 'true' || github.event.inputs.force_rebuild == 'true') && github.event.inputs.gate_check_only != 'true' && github.event.inputs.build_windows != 'false' }}
+    if: ${{ !cancelled() && (needs.check-update.outputs.should_build == 'true' || github.event.inputs.force_rebuild == 'true') && github.event.inputs.gate_check_only != 'true' && github.event.inputs.build_linux != 'false' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     env:
